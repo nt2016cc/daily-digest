@@ -46,6 +46,7 @@ CUTOFF_DAYS = 3
 MAX_ITEMS = 6
 SUMMARY_MAX_TOKENS = 300       # ~2 EN sentences + ~2 CN sentences
 DEEPSEEK_TIMEOUT = 30          # seconds
+EXPIRE_DATE = "2026-07-31"     # task freezes after this date
 
 EMOJI_POOL = [
     "🤖", "🔥", "🚀", "💡", "🧠", "🎯", "⚡", "🌟", "💎", "🦄",
@@ -392,6 +393,12 @@ def build_digest(articles):
 # ── Main ────────────────────────────────────────────────────
 def main():
     preview = "--preview" in sys.argv
+
+    # --- Expiration check ---
+    expire_dt = datetime.strptime(EXPIRE_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expire_dt and not preview:
+        print(f"Task expired on {EXPIRE_DATE} — frozen. Use --preview to still test.")
+        return
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=CUTOFF_DAYS)
 

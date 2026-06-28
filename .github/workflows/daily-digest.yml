@@ -2,8 +2,8 @@ name: Daily Tech Digest
 
 on:
   schedule:
-    # UTC+8 9:00 = UTC 1:00
-    - cron: "0 1 * * *"
+    # UTC+8 8:15 = UTC 0:15, Mon-Fri only
+    - cron: "15 0 * * 1-5"
   workflow_dispatch:
     inputs:
       preview:
