@@ -121,8 +121,76 @@ def _find_el(item, tag):
     return el
 
 
+def _fetch_substack(source_name, subdomain, cutoff):
+    """Fetch latest post from a Substack via their JSON API."""
+    api_url = f"https://{subdomain}.substack.com/api/v1/posts?limit=5"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_ctx()) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        # Fall back to RSS feed if API fails
+        return _fetch_rss(source_name, f"https://{subdomain}.substack.com/feed", cutoff)
+
+    posts = data.get("posts", [])
+    for post in posts:
+        pub_date_str = post.get("post_date") or post.get("published_at", "")
+        if not pub_date_str:
+            continue
+        dt = parse_date(pub_date_str)
+        if dt and dt >= cutoff:
+            title = clean_text(post.get("title", ""))
+            desc = clean_text(post.get("subtitle", "") or post.get("description", ""))
+            link = post.get("canonical_url", "")
+            return {
+                "title": title,
+                "link": link,
+                "date": dt,
+                "source": source_name,
+                "description": desc[:500] if desc else title,
+            }
+    return None
+
+
+def _fetch_rss(source_name, url, cutoff):
+    """Fallback RSS fetch with Referer header for stubborn feeds."""
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Referer": f"https://{url.split('/feed')[0]}/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_ctx()) as r:
+            content = r.read()
+    except Exception as e:
+        print(f"  --  [{source_name}] fetch error: {e}")
+        return None
+    return _parse_feed(source_name, content, cutoff)
+
+
 def fetch_feed(source_name, url, cutoff):
     """Return newest item within cutoff, or None."""
+    # Detect Substack URLs — use JSON API which is less likely to be blocked
+    substack_match = re.match(r"https?://([^.]+)\.substack\.com/feed", url)
+    if substack_match:
+        return _fetch_substack(source_name, substack_match.group(1), cutoff)
+
     req = urllib.request.Request(
         url,
         headers={
@@ -141,6 +209,11 @@ def fetch_feed(source_name, url, cutoff):
         print(f"  --  [{source_name}] fetch error: {e}")
         return None
 
+    return _parse_feed(source_name, content, cutoff)
+
+
+def _parse_feed(source_name, content, cutoff):
+    """Parse RSS/Atom XML and return newest item within cutoff (handled by caller)."""
     try:
         root = ET.fromstring(content)
     except ET.ParseError:
