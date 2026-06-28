@@ -43,7 +43,6 @@ QQ_OPENID = os.environ["QQ_OPENID"]
 CUTOFF_DAYS = 3
 MAX_ITEMS = 10
 
-# Emoji pool — rotated weekly
 EMOJI_POOL = [
     "🤖", "🔥", "🚀", "💡", "🧠", "🎯", "⚡", "🌟", "💎", "🦄",
     "🎪", "🍜", "🐙", "🦊", "🌵", "🐸", "🦜", "🌈", "🪐", "🏴‍☠️",
@@ -52,8 +51,10 @@ EMOJI_POOL = [
     "📉", "🖥️", "🛸", "🧲", "🎮", "🗿", "🌺", "🦋", "🐬", "🦀",
 ]
 
+ATOM_NS = "http://www.w3.org/2005/Atom"
 
-# ── HTML / text helpers ─────────────────────────────────────
+
+# ── Helpers ─────────────────────────────────────────────────
 class _Stripper(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -67,24 +68,25 @@ class _Stripper(HTMLParser):
 
 
 def strip_html(html):
+    if not html:
+        return ""
     s = _Stripper()
     s.feed(html)
     return s.get_data()
 
 
-def clean_title(t):
-    """Remove CDATA wrappers, extra whitespace, leading source prefixes."""
+def clean_text(t):
+    if not t:
+        return ""
     t = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", t, flags=re.DOTALL)
     t = strip_html(t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
 
-# ── Date parsing ────────────────────────────────────────────
 def parse_date(s):
-    """Try every RSS/Atom date format we've seen in the wild."""
     s = s.strip()
-    formats = [
+    for fmt in (
         "%a, %d %b %Y %H:%M:%S %z",
         "%a, %d %b %Y %H:%M:%S %Z",
         "%Y-%m-%dT%H:%M:%S%z",
@@ -92,8 +94,7 @@ def parse_date(s):
         "%Y-%m-%dT%H:%M:%S.%f%z",
         "%Y-%m-%dT%H:%M:%S.%fZ",
         "%Y-%m-%d %H:%M:%S",
-    ]
-    for fmt in formats:
+    ):
         try:
             dt = datetime.strptime(s, fmt)
             if dt.tzinfo is None:
@@ -104,21 +105,33 @@ def parse_date(s):
     return None
 
 
-# ── RSS Fetch ───────────────────────────────────────────────
-def fetch_feed(source_name, url, cutoff):
-    """Return newest item within cutoff, or None."""
+def ssl_ctx():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
+
+# ── RSS Fetch ───────────────────────────────────────────────
+def _find_el(item, tag):
+    """Find element in both RSS and Atom namespaces."""
+    el = item.find(tag)
+    if el is None:
+        el = item.find(f"{{{ATOM_NS}}}{tag}")
+    return el
+
+
+def fetch_feed(source_name, url, cutoff):
+    """Return newest item within cutoff, or None."""
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; DailyDigest/1.0)"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
-            content = resp.read()
-    except Exception:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_ctx()) as r:
+            content = r.read()
+    except Exception as e:
+        print(f"  --  [{source_name}] fetch error: {e}")
         return None
 
     try:
@@ -126,54 +139,41 @@ def fetch_feed(source_name, url, cutoff):
     except ET.ParseError:
         return None
 
-    # Atom namespace
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
-
-    # Try RSS 2.0 <item> first, then Atom <entry>
-    items = root.findall(".//item")
-    if not items:
-        items = root.findall(".//atom:entry", ns)
-
+    items = root.findall(".//item") or root.findall(f".//{{{ATOM_NS}}}entry")
     best = None
     best_dt = None
 
     for item in items:
-        # Title
-        title_el = item.find("title")
-        if title_el is None:
-            title_el = item.find("atom:title", ns) or item.find(
-                "{http://www.w3.org/2005/Atom}title"
-            )
-        if title_el is None:
+        title = clean_text(
+            (_find_el(item, "title").text if _find_el(item, "title") is not None else "")
+        )
+        if not title:
             continue
-        title = clean_title(title_el.text or "")
 
         # Link
-        link_el = item.find("link")
+        link_el = _find_el(item, "link")
         link = ""
         if link_el is not None:
             link = link_el.get("href", "") or (link_el.text or "")
-        if not link:
-            link_el = item.find("atom:link", ns) or item.find(
-                "{http://www.w3.org/2005/Atom}link"
-            )
-            if link_el is not None:
-                link = link_el.get("href", "") or (link_el.text or "")
         link = link.strip()
+
+        # Description
+        desc_el = (
+            _find_el(item, "description")
+            or _find_el(item, "summary")
+            or _find_el(item, "content")
+        )
+        desc = clean_text(desc_el.text if desc_el is not None else "")
 
         # PubDate
         pub_date_str = ""
         for tag in ("pubDate", "published", "updated"):
-            el = item.find(tag)
-            if el is None:
-                el = item.find(f"atom:{tag}", ns) or item.find(
-                    f"{{http://www.w3.org/2005/Atom}}{tag}"
-                )
+            el = _find_el(item, tag)
             if el is not None and el.text:
                 pub_date_str = el.text.strip()
                 break
 
-        if not pub_date_str or not title:
+        if not pub_date_str:
             continue
 
         dt = parse_date(pub_date_str)
@@ -188,6 +188,7 @@ def fetch_feed(source_name, url, cutoff):
                     "link": link,
                     "date": dt,
                     "source": source_name,
+                    "description": desc[:300] if desc else title,
                 }
 
     return best
@@ -195,7 +196,6 @@ def fetch_feed(source_name, url, cutoff):
 
 # ── QQ Bot API ──────────────────────────────────────────────
 def qq_get_token():
-    """Get QQ Bot access token."""
     data = json.dumps(
         {"appId": QQ_APP_ID, "clientSecret": QQ_CLIENT_SECRET}
     ).encode()
@@ -210,7 +210,6 @@ def qq_get_token():
 
 
 def qq_send_dm(token, content):
-    """Send a DM via QQ Bot API."""
     data = json.dumps({"content": content, "msg_type": 0}).encode()
     req = urllib.request.Request(
         f"https://api.sgroup.qq.com/v2/users/{QQ_OPENID}/messages",
@@ -226,13 +225,11 @@ def qq_send_dm(token, content):
 
 # ── Digest formatting ───────────────────────────────────────
 def build_digest(articles):
-    """Build the bilingual digest text. EN first, CN second, no URLs in body."""
     today = datetime.now(timezone.utc).astimezone(
         timezone(timedelta(hours=8))
     )
     mmdd = today.strftime("%m%d")
 
-    # Pick emojis — use mmdd to seed a deterministic pick
     week = today.isocalendar()[1]
     offset = (week * 7) % len(EMOJI_POOL)
     emojis = EMOJI_POOL[offset:] + EMOJI_POOL[:offset]
@@ -243,27 +240,14 @@ def build_digest(articles):
         emoji = emojis[i % len(emojis)]
         cat = a["category"]
         title = a["title"]
+        desc = a.get("description", title)
 
         lines.append(f"{emoji} [{cat}] {title}")
         lines.append("")
-        lines.append(
-            f"*{a.get('en_summary', 'Summary unavailable.')}*"
-        )
-        lines.append("")
-        lines.append(a.get("cn_summary", "摘要不可用。"))
+        lines.append(f"*{desc}*")
         lines.append("")
 
     return "\n".join(lines).strip()
-
-
-def summarize(title, source, category):
-    """Generate placeholder summaries. In production, an LLM would do this.
-    For now we use the title as summary since we can't call an LLM in pure Python."""
-    # GitHub Actions free tier has no LLM — use source + title as context.
-    # The digest is still useful as a headline roundup.
-    en = f"{title} — via {source}."
-    cn = f"{title} — 来源：{source}。"
-    return en, cn
 
 
 # ── Main ────────────────────────────────────────────────────
@@ -276,19 +260,10 @@ def main():
             result = fetch_feed(name, url, cutoff)
             if result:
                 result["category"] = category
-                en_sum, cn_sum = summarize(
-                    result["title"], result["source"], category
-                )
-                result["en_summary"] = en_sum
-                result["cn_summary"] = cn_sum
                 all_articles.append(result)
-                print(
-                    f"  OK  [{category}] {name}: {result['title'][:60]}"
-                )
-            else:
-                print(f"  --  [{category}] {name}: no recent items")
+                print(f"  OK  [{category}] {name}: {result['title'][:60]}")
+            # failures already printed inside fetch_feed
 
-    # Sort by date descending, take top MAX_ITEMS
     all_articles.sort(key=lambda x: x["date"], reverse=True)
     top = all_articles[:MAX_ITEMS]
 
@@ -300,12 +275,11 @@ def main():
 
     print(f"\n=== Digest ({len(top)} items) ===\n")
     print(digest)
-    print(f"\n=== Sending to QQ {QQ_OPENID[:8]}... ===")
+    print(f"\n=== Sending to QQ ... ===")
 
     token = qq_get_token()
     result = qq_send_dm(token, digest)
     print(f"QQ response: {json.dumps(result, ensure_ascii=False)}")
-
     print("Done!")
 
 
