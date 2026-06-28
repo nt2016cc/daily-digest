@@ -1,0 +1,26 @@
+name: Daily Tech Digest
+
+on:
+  schedule:
+    # UTC+8 9:00 = UTC 1:00
+    - cron: "0 1 * * *"
+  workflow_dispatch:  # manual trigger for testing
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run digest
+        env:
+          QQ_APP_ID: ${{ secrets.QQ_APP_ID }}
+          QQ_CLIENT_SECRET: ${{ secrets.QQ_CLIENT_SECRET }}
+          QQ_OPENID: ${{ secrets.QQ_OPENID }}
+        run: python digest.py
