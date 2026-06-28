@@ -19,9 +19,6 @@ RSS_SOURCES = {
     "AI": [
         ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml"),
         ("Ahead of AI", "https://magazine.sebastianraschka.com/feed"),
-        ("Marcus on AI", "https://garymarcus.substack.com/feed"),
-        ("Ben's Bites", "https://bensbites.substack.com/feed"),
-        ("AI Supremacy", "https://aisupremacy.substack.com/feed"),
     ],
     "Phone": [
         ("GSMArena", "https://www.gsmarena.com/rss-news-reviews.php3"),
@@ -41,7 +38,7 @@ QQ_APP_ID = os.environ["QQ_APP_ID"]
 QQ_CLIENT_SECRET = os.environ["QQ_CLIENT_SECRET"]
 QQ_OPENID = os.environ["QQ_OPENID"]
 CUTOFF_DAYS = 3
-MAX_ITEMS = 10
+MAX_ITEMS = 6
 
 EMOJI_POOL = [
     "🤖", "🔥", "🚀", "💡", "🧠", "🎯", "⚡", "🌟", "💎", "🦄",
@@ -274,6 +271,58 @@ def _parse_feed(source_name, content, cutoff):
     return best
 
 
+def _fetch_article_text(url, max_chars=500):
+    """Fetch and extract the first substantive paragraph from an article page."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx()) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    # Remove scripts, styles, and HTML tags
+    html = re.sub(r"<(script|style|noscript|iframe|nav|footer|header)[^>]*>.*?</\1>",
+                  "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Split into sentences and take a substantial chunk
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    result = []
+    length = 0
+    for s in sentences:
+        s = s.strip()
+        if len(s) < 20:  # skip nav fragments, short UI text
+            continue
+        result.append(s)
+        length += len(s)
+        if length >= max_chars:
+            break
+
+    return " ".join(result) if result else None
+
+
+def _is_bad_description(desc, title):
+    """Check if description is empty, identical to title, or too short."""
+    if not desc or desc == title:
+        return True
+    # Remove common prefixes and compare
+    clean_desc = re.sub(r"^(Read more|Continue reading|Click here)[:.]?\s*", "",
+                        desc, flags=re.IGNORECASE).strip()
+    if clean_desc == title or len(clean_desc) < 30:
+        return True
+    return False
+
+
 # ── QQ Bot API ──────────────────────────────────────────────
 def qq_get_token():
     data = json.dumps(
@@ -346,6 +395,16 @@ def main():
 
     all_articles.sort(key=lambda x: x["date"], reverse=True)
     top = all_articles[:MAX_ITEMS]
+
+    # Enrich descriptions: fetch article text if RSS description is too thin
+    for a in top:
+        if _is_bad_description(a.get("description", ""), a.get("title", "")):
+            link = a.get("link", "")
+            if link:
+                better = _fetch_article_text(link)
+                if better and len(better) > len(a.get("description", "")):
+                    a["description"] = better
+    
 
     if not top:
         print("No articles in window — exiting silently.")
