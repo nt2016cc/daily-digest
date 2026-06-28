@@ -269,7 +269,7 @@ def summarize_with_deepseek(title, description):
     """
     if not DEEPSEEK_API_KEY:
         print("  [DeepSeek] No API key — using raw description")
-        return f"*{description}*"
+        return f"{description}"
 
     prompt = (
         f"Summarize this tech article in exactly 2 short, informative English sentences, "
@@ -303,11 +303,11 @@ def summarize_with_deepseek(title, description):
             body = json.loads(resp.read())
     except Exception as e:
         print(f"  [DeepSeek] API call failed: {e} — falling back to raw description")
-        return f"*{description}*"
+        return f"{description}"
 
     content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content:
-        return f"*{description}*"
+        return f"{description}"
 
     # Parse EN: / CN: sections
     en_match = re.search(r"EN:\s*(.+?)(?=\nCN:|\Z)", content, re.DOTALL)
@@ -318,11 +318,11 @@ def summarize_with_deepseek(title, description):
 
     if not en_text and not cn_text:
         # Parse failed — use raw content
-        return f"*{content.strip()[:500]}*"
+        return f"{content.strip()[:500]}"
 
     parts = []
     if en_text:
-        parts.append(f"*{en_text}*")
+        parts.append(f"{en_text}")
     if cn_text:
         parts.append(cn_text)
     return "\n".join(parts)
@@ -383,7 +383,7 @@ def build_digest(articles):
             lines.append(summary)
         else:
             desc = a.get("description", title)
-            lines.append(f"*{desc}*")
+            lines.append(f"{desc}")
         lines.append("")
 
     return "\n".join(lines).strip()
