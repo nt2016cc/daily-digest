@@ -141,7 +141,7 @@ def _fetch_substack(source_name, subdomain, cutoff):
         # Fall back to RSS feed if API fails
         return _fetch_rss(source_name, f"https://{subdomain}.substack.com/feed", cutoff)
 
-    posts = data.get("posts", [])
+    posts = data if isinstance(data, list) else data.get("posts", [])
     for post in posts:
         pub_date_str = post.get("post_date") or post.get("published_at", "")
         if not pub_date_str:
