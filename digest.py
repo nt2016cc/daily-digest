@@ -1,8 +1,12 @@
 """
 Daily Tech Digest — fetch 13 RSS feeds, filter 3-day freshness,
-generate bilingual digest (EN-first), push to QQ Bot.
+generate bilingual digest (EN-first) with DeepSeek AI summaries, push to QQ Bot.
 
 GitHub Actions cron: daily at 1:00 UTC (9:00 Beijing time).
+
+Usage:
+    python digest.py          # full run: fetch + summarize + send to QQ
+    python digest.py --preview # fetch + summarize, print only (no QQ send)
 """
 import json
 import os
@@ -37,8 +41,11 @@ RSS_SOURCES = {
 QQ_APP_ID = os.environ["QQ_APP_ID"]
 QQ_CLIENT_SECRET = os.environ["QQ_CLIENT_SECRET"]
 QQ_OPENID = os.environ["QQ_OPENID"]
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 CUTOFF_DAYS = 3
 MAX_ITEMS = 6
+SUMMARY_MAX_TOKENS = 300       # ~2 EN sentences + ~2 CN sentences
+DEEPSEEK_TIMEOUT = 30          # seconds
 
 EMOJI_POOL = [
     "🤖", "🔥", "🚀", "💡", "🧠", "🎯", "⚡", "🌟", "💎", "🦄",
@@ -153,20 +160,17 @@ def _parse_feed(source_name, content, cutoff):
     best_dt = None
 
     for item in items:
-        title = clean_text(
-            (_find_el(item, "title").text if _find_el(item, "title") is not None else "")
-        )
+        title_el = _find_el(item, "title")
+        title = clean_text(title_el.text if title_el is not None else "")
         if not title:
             continue
 
-        # Link
         link_el = _find_el(item, "link")
         link = ""
         if link_el is not None:
             link = link_el.get("href", "") or (link_el.text or "")
         link = link.strip()
 
-        # Description
         desc_el = (
             _find_el(item, "description")
             or _find_el(item, "summary")
@@ -174,7 +178,6 @@ def _parse_feed(source_name, content, cutoff):
         )
         desc = clean_text(desc_el.text if desc_el is not None else "")
 
-        # PubDate
         pub_date_str = ""
         for tag in ("pubDate", "published", "updated"):
             el = _find_el(item, tag)
@@ -221,19 +224,19 @@ def _fetch_article_text(url, max_chars=500):
     except Exception:
         return None
 
-    # Remove scripts, styles, and HTML tags
-    html = re.sub(r"<(script|style|noscript|iframe|nav|footer|header)[^>]*>.*?</\1>",
-                  "", html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(
+        r"<(script|style|noscript|iframe|nav|footer|header)[^>]*>.*?</\1>",
+        "", html, flags=re.DOTALL | re.IGNORECASE,
+    )
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text).strip()
 
-    # Split into sentences and take a substantial chunk
     sentences = re.split(r"(?<=[.!?])\s+", text)
     result = []
     length = 0
     for s in sentences:
         s = s.strip()
-        if len(s) < 20:  # skip nav fragments, short UI text
+        if len(s) < 20:
             continue
         result.append(s)
         length += len(s)
@@ -247,12 +250,82 @@ def _is_bad_description(desc, title):
     """Check if description is empty, identical to title, or too short."""
     if not desc or desc == title:
         return True
-    # Remove common prefixes and compare
-    clean_desc = re.sub(r"^(Read more|Continue reading|Click here)[:.]?\s*", "",
-                        desc, flags=re.IGNORECASE).strip()
+    clean_desc = re.sub(
+        r"^(Read more|Continue reading|Click here)[:.]?\s*", "",
+        desc, flags=re.IGNORECASE,
+    ).strip()
     if clean_desc == title or len(clean_desc) < 30:
         return True
     return False
+
+
+# ── DeepSeek AI Summarization ───────────────────────────────
+def summarize_with_deepseek(title, description):
+    """
+    Use DeepSeek to generate ~2 English sentences + ~2 Chinese sentences.
+    Returns formatted string, or falls back to raw description on failure.
+    
+    Cost control: max_tokens=300, timeout=30s, single attempt (no retry).
+    """
+    if not DEEPSEEK_API_KEY:
+        print("  [DeepSeek] No API key — using raw description")
+        return f"*{description}*"
+
+    prompt = (
+        f"Summarize this tech article in exactly 2 short, informative English sentences, "
+        f"then translate those same 2 sentences into simplified Chinese.\n\n"
+        f"Title: {title}\n"
+        f"Content: {description}\n\n"
+        f"Reply in this EXACT format with no extra commentary:\n"
+        f"EN: [2 English sentences]\n"
+        f"CN: [2 Chinese sentences]"
+    )
+
+    payload = json.dumps({
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": SUMMARY_MAX_TOKENS,
+        "temperature": 0.3,
+        "stream": False,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.deepseek.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=DEEPSEEK_TIMEOUT) as resp:
+            body = json.loads(resp.read())
+    except Exception as e:
+        print(f"  [DeepSeek] API call failed: {e} — falling back to raw description")
+        return f"*{description}*"
+
+    content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not content:
+        return f"*{description}*"
+
+    # Parse EN: / CN: sections
+    en_match = re.search(r"EN:\s*(.+?)(?=\nCN:|\Z)", content, re.DOTALL)
+    cn_match = re.search(r"CN:\s*(.+)", content, re.DOTALL)
+
+    en_text = en_match.group(1).strip() if en_match else ""
+    cn_text = cn_match.group(1).strip() if cn_match else ""
+
+    if not en_text and not cn_text:
+        # Parse failed — use raw content
+        return f"*{content.strip()[:500]}*"
+
+    parts = []
+    if en_text:
+        parts.append(f"*{en_text}*")
+    if cn_text:
+        parts.append(cn_text)
+    return "\n".join(parts)
 
 
 # ── QQ Bot API ──────────────────────────────────────────────
@@ -297,15 +370,20 @@ def build_digest(articles):
 
     lines = [f"# Daily Updates · {mmdd}", ""]
 
-    for i, a in enumerate(articles):
-        emoji = emojis[i % len(emojis)]
+    for i, a in enumerate(articles, 1):
+        emoji = emojis[(i - 1) % len(emojis)]
+        num = f"{i:02d}"
         cat = a["category"]
         title = a["title"]
-        desc = a.get("description", title)
+        summary = a.get("ai_summary", "")
 
-        lines.append(f"{emoji} [{cat}] {title}")
+        lines.append(f"{emoji} {num} [{cat}] {title}")
         lines.append("")
-        lines.append(f"{desc}")
+        if summary:
+            lines.append(summary)
+        else:
+            desc = a.get("description", title)
+            lines.append(f"*{desc}*")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -313,8 +391,11 @@ def build_digest(articles):
 
 # ── Main ────────────────────────────────────────────────────
 def main():
+    preview = "--preview" in sys.argv
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=CUTOFF_DAYS)
 
+    print("=== Fetching RSS feeds ===")
     all_articles = []
     for category, sources in RSS_SOURCES.items():
         for name, url in sources:
@@ -323,12 +404,11 @@ def main():
                 result["category"] = category
                 all_articles.append(result)
                 print(f"  OK  [{category}] {name}: {result['title'][:60]}")
-            # failures already printed inside fetch_feed
 
     all_articles.sort(key=lambda x: x["date"], reverse=True)
     top = all_articles[:MAX_ITEMS]
 
-    # Enrich descriptions: fetch article text if RSS description is too thin
+    # Enrich thin descriptions by fetching article text
     for a in top:
         if _is_bad_description(a.get("description", ""), a.get("title", "")):
             link = a.get("link", "")
@@ -336,18 +416,29 @@ def main():
                 better = _fetch_article_text(link)
                 if better and len(better) > len(a.get("description", "")):
                     a["description"] = better
-    
 
     if not top:
         print("No articles in window — exiting silently.")
         return
 
+    # AI Summarization via DeepSeek
+    print(f"\n=== Summarizing {len(top)} articles with DeepSeek ===")
+    for a in top:
+        title = a["title"]
+        desc = a.get("description", title)
+        print(f"  Summarizing: {title[:60]}...")
+        a["ai_summary"] = summarize_with_deepseek(title, desc)
+
     digest = build_digest(top)
 
     print(f"\n=== Digest ({len(top)} items) ===\n")
     print(digest)
-    print(f"\n=== Sending to QQ ... ===")
 
+    if preview:
+        print("\n=== PREVIEW MODE — not sent to QQ ===")
+        return
+
+    print(f"\n=== Sending to QQ ... ===")
     token = qq_get_token()
     result = qq_send_dm(token, digest)
     print(f"QQ response: {json.dumps(result, ensure_ascii=False)}")
