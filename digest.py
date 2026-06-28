@@ -188,7 +188,7 @@ def fetch_feed(source_name, url, cutoff):
                     "link": link,
                     "date": dt,
                     "source": source_name,
-                    "description": desc[:300] if desc else title,
+                    "description": desc[:500] if desc else title,
                 }
 
     return best
@@ -244,7 +244,7 @@ def build_digest(articles):
 
         lines.append(f"{emoji} [{cat}] {title}")
         lines.append("")
-        lines.append(f"*{desc}*")
+        lines.append(f"{desc}")
         lines.append("")
 
     return "\n".join(lines).strip()
