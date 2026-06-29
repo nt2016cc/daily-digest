@@ -1,0 +1,51 @@
+name: Daily Digest Watchdog
+
+on:
+  schedule:
+    # UTC+8 11:00 = UTC 3:00 — runs AFTER all 3 main schedule attempts
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check if today's digest already ran
+        id: check
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "Checking for runs on $TODAY..."
+
+          RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow "Daily Tech Digest" \
+            --created "$TODAY" \
+            --json conclusion,status \
+            --jq '[.[] | select(.conclusion=="success" and .status=="completed")] | length')
+
+          echo "Successful runs today: $RUNS"
+
+          if [ "$RUNS" -gt 0 ]; then
+            echo "Digest already sent today. Nothing to do."
+            echo "already_sent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No successful digest today — triggering fallback..."
+            echo "already_sent=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Trigger main digest workflow
+        if: steps.check.outputs.already_sent == 'false'
+        run: |
+          gh workflow run "Daily Tech Digest" \
+            --repo "$GITHUB_REPOSITORY" \
+            -f preview=false
+          echo "Main workflow triggered."
+        env:
+          GH_TOKEN: ${{ github.token }}
