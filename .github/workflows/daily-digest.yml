@@ -2,14 +2,23 @@ name: Daily Tech Digest
 
 on:
   schedule:
-    # UTC+8 8:15 = UTC 0:15, Mon-Fri only
-    - cron: "15 0 * * 1-5"
+    # UTC+8 9:00 = UTC 1:00, every day (primary)
+    - cron: "0 1 * * *"
+    # Fallback 1: +30 min if primary missed
+    - cron: "30 1 * * *"
+    # Fallback 2: +60 min as last resort
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       preview:
         description: 'Preview mode — print only, no QQ send'
         type: boolean
         default: true
+
+# Prevent duplicate runs stacking up
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
 
 jobs:
   digest:
