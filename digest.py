@@ -1,6 +1,7 @@
 """
-Daily Tech Digest — fetch 13 RSS feeds, filter 3-day freshness,
-generate bilingual digest (EN-first) with DeepSeek AI summaries, push to QQ Bot.
+Daily Tech Digest — fetch multi-source RSS feeds, filter 3-day freshness,
+generate bilingual digest (EN-first for EN sources, CN-only for ZH sources)
+with DeepSeek AI summaries, push to QQ Bot.
 
 GitHub Actions cron: daily at 1:00 UTC (9:00 Beijing time).
 
@@ -19,31 +20,56 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
 # ── Config ──────────────────────────────────────────────────
+# Each source: (display_name, url, language)
+#   language: "en" = English → DeepSeek generates EN+CN summary
+#             "zh" = Chinese → keep original description, no DeepSeek
 RSS_SOURCES = {
+    # ── AI / ML ──
     "AI": [
-        ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml"),
-        ("Ahead of AI", "https://magazine.sebastianraschka.com/feed"),
+        ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml", "en"),
+        ("Ahead of AI", "https://magazine.sebastianraschka.com/feed", "en"),
     ],
+    # ── Supply Chain / Leaks ──
+    "供应链": [
+        ("郭明錤", "http://localhost:1200/twitter/user/mingchikuo", "zh"),
+        ("Mark Gurman", "http://localhost:1200/twitter/user/markgurman", "en"),
+        ("DigiTimes", "http://localhost:1200/digitimes/category/2", "zh"),
+    ],
+    # ── Phone ──
     "Phone": [
-        ("GSMArena", "https://www.gsmarena.com/rss-news-reviews.php3"),
-        ("Android Authority", "https://www.androidauthority.com/feed"),
-        ("9to5Google", "https://9to5google.com/feed"),
-        ("XDA Developers", "https://www.xda-developers.com/feed"),
-        ("Droid Life", "https://www.droid-life.com/feed"),
+        ("GSMArena", "https://www.gsmarena.com/rss-news-reviews.php3", "en"),
+        ("Android Authority", "https://www.androidauthority.com/feed", "en"),
+        ("9to5Google", "https://9to5google.com/feed", "en"),
+        ("XDA Developers", "https://www.xda-developers.com/feed", "en"),
+        ("Droid Life", "https://www.droid-life.com/feed", "en"),
     ],
+    # ── Hardware Reviews ──
+    "评测": [
+        ("Notebookcheck", "https://www.notebookcheck.net/RSS-Feed-Notebook-Reviews.8156.0.html", "en"),
+        ("充电头网", "http://localhost:1200/chongdiantou/news", "zh"),
+        ("极客湾", "http://localhost:1200/bilibili/user/video/258150656", "zh"),
+        ("微机分", "http://localhost:1200/bilibili/user/video/673816", "zh"),
+    ],
+    # ── Apple ──
     "Apple": [
-        ("9to5Mac", "https://9to5mac.com/feed"),
-        ("MacRumors", "https://feeds.macrumors.com/MacRumors-All"),
-        ("AppleInsider", "https://appleinsider.com/rss/news/"),
+        ("9to5Mac", "https://9to5mac.com/feed", "en"),
+        ("MacRumors", "https://feeds.macrumors.com/MacRumors-All", "en"),
+        ("AppleInsider", "https://appleinsider.com/rss/news/", "en"),
+    ],
+    # ── Chinese Tech Community ──
+    "中文社区": [
+        ("少数派", "https://sspai.com/feed", "zh"),
+        ("V2EX Apple", "https://www.v2ex.com/feed/apple.xml", "zh"),
+        ("V2EX 硬件", "https://www.v2ex.com/feed/hardware.xml", "zh"),
     ],
 }
 
-QQ_APP_ID = os.environ["QQ_APP_ID"]
-QQ_CLIENT_SECRET = os.environ["QQ_CLIENT_SECRET"]
-QQ_OPENID = os.environ["QQ_OPENID"]
+QQ_APP_ID = os.environ.get("QQ_APP_ID", "")
+QQ_CLIENT_SECRET = os.environ.get("QQ_CLIENT_SECRET", "")
+QQ_OPENID = os.environ.get("QQ_OPENID", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 CUTOFF_DAYS = 3
-MAX_ITEMS = 6
+MAX_ITEMS = 8
 SUMMARY_MAX_TOKENS = 300       # ~2 EN sentences + ~2 CN sentences
 DEEPSEEK_TIMEOUT = 30          # seconds
 EXPIRE_DATE = "2026-07-31"     # task freezes after this date
@@ -251,6 +277,11 @@ def _is_bad_description(desc, title):
     """Check if description is empty, identical to title, or too short."""
     if not desc or desc == title:
         return True
+    # Cloudflare / anti-bot garbage
+    if "turnstile" in desc.lower() or "cf-browser-verify" in desc.lower():
+        return True
+    if "one quick check before you continue" in desc.lower():
+        return True
     clean_desc = re.sub(
         r"^(Read more|Continue reading|Click here)[:.]?\s*", "",
         desc, flags=re.IGNORECASE,
@@ -260,17 +291,20 @@ def _is_bad_description(desc, title):
     return False
 
 
+# ── Language Detection ──────────────────────────────────────
+def _has_chinese(text):
+    """Quick check if text contains Chinese characters."""
+    return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+
 # ── DeepSeek AI Summarization ───────────────────────────────
-def summarize_with_deepseek(title, description):
+def summarize_en_source(title, description):
     """
-    Use DeepSeek to generate ~2 English sentences + ~2 Chinese sentences.
-    Returns formatted string, or falls back to raw description on failure.
-    
-    Cost control: max_tokens=300, timeout=30s, single attempt (no retry).
+    Summarize English article: ~2 EN sentences + ~2 CN sentences via DeepSeek.
     """
     if not DEEPSEEK_API_KEY:
         print("  [DeepSeek] No API key — using raw description")
-        return f"{description}"
+        return description
 
     prompt = (
         f"Summarize this tech article in exactly 2 short, informative English sentences, "
@@ -304,13 +338,12 @@ def summarize_with_deepseek(title, description):
             body = json.loads(resp.read())
     except Exception as e:
         print(f"  [DeepSeek] API call failed: {e} — falling back to raw description")
-        return f"{description}"
+        return description
 
     content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content:
-        return f"{description}"
+        return description
 
-    # Parse EN: / CN: sections
     en_match = re.search(r"EN:\s*(.+?)(?=\nCN:|\Z)", content, re.DOTALL)
     cn_match = re.search(r"CN:\s*(.+)", content, re.DOTALL)
 
@@ -318,15 +351,31 @@ def summarize_with_deepseek(title, description):
     cn_text = cn_match.group(1).strip() if cn_match else ""
 
     if not en_text and not cn_text:
-        # Parse failed — use raw content
-        return f"{content.strip()[:500]}"
+        return content.strip()[:500]
 
     parts = []
     if en_text:
-        parts.append(f"{en_text}")
+        parts.append(en_text)
     if cn_text:
         parts.append(cn_text)
     return "\n".join(parts)
+
+
+def summarize_zh_source(title, description):
+    """
+    Chinese article: keep original description as-is, no DeepSeek needed.
+    Truncate to reasonable length.
+    """
+    text = description if description else title
+    return text[:500]
+
+
+def summarize_article(title, description, lang):
+    """Route to correct summarizer based on source language."""
+    if lang == "zh":
+        return summarize_zh_source(title, description)
+    else:
+        return summarize_en_source(title, description)
 
 
 # ── QQ Bot API ──────────────────────────────────────────────
@@ -384,7 +433,7 @@ def build_digest(articles):
             lines.append(summary)
         else:
             desc = a.get("description", title)
-            lines.append(f"{desc}")
+            lines.append(desc)
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -405,10 +454,12 @@ def main():
     print("=== Fetching RSS feeds ===")
     all_articles = []
     for category, sources in RSS_SOURCES.items():
-        for name, url in sources:
+        for entry in sources:
+            name, url, lang = entry
             result = fetch_feed(name, url, cutoff)
             if result:
                 result["category"] = category
+                result["lang"] = lang
                 all_articles.append(result)
                 print(f"  OK  [{category}] {name}: {result['title'][:60]}")
 
@@ -428,13 +479,15 @@ def main():
         print("No articles in window — exiting silently.")
         return
 
-    # AI Summarization via DeepSeek
-    print(f"\n=== Summarizing {len(top)} articles with DeepSeek ===")
+    # AI Summarization: EN sources → DeepSeek, ZH sources → keep original
+    print(f"\n=== Summarizing {len(top)} articles ===")
     for a in top:
         title = a["title"]
         desc = a.get("description", title)
-        print(f"  Summarizing: {title[:60]}...")
-        a["ai_summary"] = summarize_with_deepseek(title, desc)
+        lang = a.get("lang", "en")
+        tag = "[DeepSeek]" if lang == "en" else "[ZH-raw]"
+        print(f"  {tag} {title[:60]}...")
+        a["ai_summary"] = summarize_article(title, desc, lang)
 
     digest = build_digest(top)
 
@@ -445,7 +498,7 @@ def main():
         print("\n=== PREVIEW MODE — not sent to QQ ===")
         return
 
-    print(f"\n=== Sending to QQ ... ===")
+    print("\n=== Sending to QQ ... ===")
     token = qq_get_token()
     result = qq_send_dm(token, digest)
     print(f"QQ response: {json.dumps(result, ensure_ascii=False)}")

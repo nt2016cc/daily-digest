@@ -25,12 +25,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # RSSHub as a service container for localhost:1200 routes
+    services:
+      rsshub:
+        image: diygod/rsshub:latest
+        ports:
+          - 1200:1200
+        env:
+          # Twitter auth for mingchikuo / markgurman routes
+          TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
+          # Allow all routes
+          DISALLOW_ROBOT: false
+        options: >-
+          --health-cmd "wget -qO- http://localhost:1200/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Wait for RSSHub
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sSf http://localhost:1200/health > /dev/null 2>&1; then
+              echo "RSSHub ready"
+              exit 0
+            fi
+            echo "Waiting for RSSHub... ($i/30)"
+            sleep 2
+          done
+          echo "WARNING: RSSHub not ready — continuing without it"
 
       - name: Run digest
         env:
