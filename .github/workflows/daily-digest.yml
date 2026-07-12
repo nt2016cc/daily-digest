@@ -36,12 +36,6 @@ jobs:
           TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
           # Allow all routes
           DISALLOW_ROBOT: false
-        options: >-
-          --health-cmd "wget -qO- http://localhost:1200/health || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +46,7 @@ jobs:
       - name: Wait for RSSHub
         run: |
           for i in $(seq 1 30); do
-            if curl -sSf http://localhost:1200/health > /dev/null 2>&1; then
+            if curl -sSf http://localhost:1200/ > /dev/null 2>&1; then
               echo "RSSHub ready"
               exit 0
             fi
