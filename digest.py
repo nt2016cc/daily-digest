@@ -30,10 +30,12 @@ RSS_SOURCES = {
         ("Ahead of AI", "https://magazine.sebastianraschka.com/feed", "en"),
     ],
     # ── Supply Chain / Leaks ──
+    # NOTE: Twitter routes need TWITTER_AUTH_TOKEN (not set in GitHub Secrets)
+    #       digitimes route deleted from RSSHub
     "供应链": [
-        ("郭明錤", "http://localhost:1200/twitter/user/mingchikuo", "zh"),
-        ("Mark Gurman", "http://localhost:1200/twitter/user/markgurman", "en"),
-        ("DigiTimes", "http://localhost:1200/digitimes/category/2", "zh"),
+        # ("郭明錤", "http://localhost:1200/twitter/user/mingchikuo", "zh"),
+        # ("Mark Gurman", "http://localhost:1200/twitter/user/markgurman", "en"),
+        # ("DigiTimes", "http://localhost:1200/digitimes/category/2", "zh"),
     ],
     # ── Phone ──
     "Phone": [
@@ -46,9 +48,9 @@ RSS_SOURCES = {
     # ── Hardware Reviews ──
     "评测": [
         ("Notebookcheck", "https://www.notebookcheck.net/RSS-Feed-Notebook-Reviews.8156.0.html", "en"),
-        ("充电头网", "http://localhost:1200/chongdiantou/news", "zh"),
-        ("极客湾", "http://localhost:1200/bilibili/user/video/258150656", "zh"),
-        ("微机分", "http://localhost:1200/bilibili/user/video/673816", "zh"),
+        # ("充电头网", "http://localhost:1200/chongdiantou/news", "zh"),  # route deleted from RSSHub
+        # ("极客湾", "http://localhost:1200/bilibili/user/video/258150656", "zh"),  # needs Playwright in Docker
+        # ("微机分", "http://localhost:1200/bilibili/user/video/673816", "zh"),  # needs Playwright in Docker
     ],
     # ── Apple ──
     "Apple": [
@@ -72,7 +74,7 @@ CUTOFF_DAYS = 3
 MAX_ITEMS = 8
 SUMMARY_MAX_TOKENS = 300       # ~2 EN sentences + ~2 CN sentences
 DEEPSEEK_TIMEOUT = 30          # seconds
-EXPIRE_DATE = "2026-07-31"     # task freezes after this date
+EXPIRE_DATE = "2026-12-31"     # task freezes after this date
 
 EMOJI_POOL = [
     "🤖", "🔥", "🚀", "💡", "🧠", "🎯", "⚡", "🌟", "💎", "🦄",

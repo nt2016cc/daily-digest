@@ -32,10 +32,14 @@ jobs:
         ports:
           - 1200:1200
         env:
-          # Twitter auth for mingchikuo / markgurman routes
-          TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
           # Allow all routes
           DISALLOW_ROBOT: false
+        options: >-
+          --health-cmd "wget -qO- http://localhost:1200/ || exit 1"
+          --health-start-period 30s
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 3
     steps:
       - uses: actions/checkout@v4
 
